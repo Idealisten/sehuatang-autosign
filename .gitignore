@@ -1,0 +1,19 @@
+# Python 虚拟环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 敏感配置文件与个人日志
+config.json
+*.log
+sehuatang_sign.log
+
+# macOS 系统临时文件
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 临时验证码测试图片
+sample_*.png
+temp_*.db
