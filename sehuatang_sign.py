@@ -239,63 +239,84 @@ class SehuatangSigner:
         self.username = None
         self.formhash = None
 
-    def check_login(self) -> bool:
-        """检查登录状态并解析用户名"""
-        try:
-            resp = self.session.get(FORUM_URL, timeout=15)
-            if resp.status_code != 200:
-                logger.warning(f"访问论坛主页状态码异常: {resp.status_code}")
-                return False
+    def check_login(self, max_retries: int = 3) -> tuple[bool, str]:
+        """
+        检查登录状态并解析用户名
+        返回: (是否成功, 原因: "success" | "cookie_expired" | "network_error")
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = self.session.get(FORUM_URL, timeout=25)
+                if resp.status_code != 200:
+                    logger.warning(f"访问论坛主页状态码异常 (尝试 {attempt}/{max_retries}): {resp.status_code}")
+                    time.sleep(3)
+                    continue
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            user_el = soup.select_one(".vwmy a") or soup.select_one("strong.vwmy")
-            if user_el:
-                self.username = user_el.get_text(strip=True)
-                logger.info(f"登录状态正常，当前用户: 【{self.username}】")
-            else:
-                logger.warning("未在页面中找到用户信息，Cookie 可能已过期！")
-                return False
+                soup = BeautifulSoup(resp.text, "html.parser")
+                user_el = soup.select_one(".vwmy a") or soup.select_one("strong.vwmy")
+                if user_el:
+                    self.username = user_el.get_text(strip=True)
+                    logger.info(f"登录状态正常，当前用户: 【{self.username}】")
+                    formhash_input = soup.find("input", {"name": "formhash"})
+                    if formhash_input:
+                        self.formhash = formhash_input.get("value")
+                    return True, "success"
+                else:
+                    logger.warning("页面已响应但未找到用户信息，Cookie 可能已过期！")
+                    return False, "cookie_expired"
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                logger.warning(f"连接色花堂超时/网络波动 (尝试 {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    time.sleep(4 * attempt)
+                else:
+                    logger.error(f"连续 {max_retries} 次连接色花堂超时")
+                    return False, "network_error"
+            except Exception as e:
+                logger.error(f"检查登录异常: {e}")
+                if attempt < max_retries:
+                    time.sleep(3)
+                else:
+                    return False, "network_error"
+        return False, "network_error"
 
-            formhash_input = soup.find("input", {"name": "formhash"})
-            if formhash_input:
-                self.formhash = formhash_input.get("value")
-            return True
-        except Exception as e:
-            logger.error(f"检查登录异常: {e}")
-            return False
-
-    def check_signed_in_status(self) -> tuple[bool, str]:
+    def check_signed_in_status(self, max_retries: int = 3) -> tuple[bool, str, str]:
         """
         检查今日签到状态
-        返回: (是否已签到, 状态描述文本)
+        返回: (是否已签到, 状态描述文本, 错误标识: "ok" | "network_error")
         """
-        try:
-            resp = self.session.get(SIGN_PAGE_URL, timeout=15)
-            if resp.status_code != 200:
-                return False, f"访问签到页面失败 (HTTP {resp.status_code})"
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = self.session.get(SIGN_PAGE_URL, timeout=25)
+                if resp.status_code != 200:
+                    time.sleep(3)
+                    continue
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            btn = soup.find(id="signin-btn")
-            btn_container = soup.select_one(".ddpc_sign_btna")
+                soup = BeautifulSoup(resp.text, "html.parser")
+                btn = soup.find(id="signin-btn")
+                btn_container = soup.select_one(".ddpc_sign_btna")
 
-            # 如果存在 signin-btn，说明尚未签到
-            if btn:
-                btn_text = btn.get_text(strip=True)
-                if "未签到" in btn_text or "点击签到" in btn_text:
-                    return False, "今日未签到"
+                # 如果存在 signin-btn，说明尚未签到
+                if btn:
+                    btn_text = btn.get_text(strip=True)
+                    if "未签到" in btn_text or "点击签到" in btn_text:
+                        return False, "今日未签到", "ok"
 
-            # 如果容器中有 "已签到"
-            if btn_container and "已签到" in btn_container.get_text():
-                return True, "今日已签到"
+                # 如果容器中有 "已签到"
+                if btn_container and "已签到" in btn_container.get_text():
+                    return True, "今日已签到", "ok"
 
-            # 再次检查页面文本
-            if "今日已签到" in resp.text:
-                return True, "今日已签到"
+                # 再次检查页面文本
+                if "今日已签到" in resp.text:
+                    return True, "今日已签到", "ok"
 
-            return False, "签到状态未知，尝试签到"
-        except Exception as e:
-            logger.error(f"检查签到状态出错: {e}")
-            return False, f"检查出错: {e}"
+                return False, "今日未签到", "ok"
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                logger.warning(f"获取签到页面超时 (尝试 {attempt}/{max_retries}): {e}")
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"检查签到状态出错: {e}")
+                time.sleep(2)
+        return False, "网络超时无法打开签到页", "network_error"
 
     def _solve_slide(self, master_b64: str, thumb_b64: str, display_y: int) -> str:
         """求解 slide (水平滑块) 验证码"""
@@ -442,7 +463,7 @@ class SehuatangSigner:
                 "X-Requested-With": "XMLHttpRequest",
                 "Referer": SIGN_PAGE_URL,
             }
-            resp = self.session.get(DO_SIGN_URL, headers=sign_headers, timeout=10)
+            resp = self.session.get(DO_SIGN_URL, headers=sign_headers, timeout=20)
             data = resp.json()
             if data and data.get("code") == 200:
                 msg = data.get("message", "签到成功")
@@ -457,8 +478,10 @@ class SehuatangSigner:
             return False, str(e)
 
 
-def run_sign_process(notify: bool = True, profile: str = "Default") -> bool:
-    """运行一次完整的签到流程"""
+def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: int = 3) -> bool:
+    """
+    运行完整的签到流程，具备多轮网络容错与重试机制
+    """
     logger.info("=" * 50)
     logger.info("开始执行色花堂自动签到流程")
 
@@ -470,47 +493,89 @@ def run_sign_process(notify: bool = True, profile: str = "Default") -> bool:
 
     signer = SehuatangSigner(cookies)
 
-    # 1. 检查登录状态
-    if not signer.check_login():
-        msg = "登录状态失效或无法连接，请在 Chrome 重新登录色花堂"
-        logger.error(msg)
-        if notify:
-            notify_user("色花堂自动签到", msg, "登录失败")
-        return False
+    for round_num in range(1, max_rounds + 1):
+        if round_num > 1:
+            logger.info(f"--- 进行第 {round_num}/{max_rounds} 轮签到尝试 ---")
 
-    # 2. 检查是否已经签到
-    already_signed, status_msg = signer.check_signed_in_status()
-    if already_signed:
-        info_msg = f"用户【{signer.username}】今日已完成签到，无需重复操作"
-        logger.info(info_msg)
-        if notify:
-            notify_user("色花堂自动签到", info_msg, "今日已签到")
-        return True
+        # 1. 检查登录状态
+        login_ok, login_status = signer.check_login(max_retries=3)
+        if not login_ok:
+            if login_status == "cookie_expired":
+                msg = "登录 Cookie 已失效，请在 Chrome 重新登录色花堂"
+                logger.error(msg)
+                if notify:
+                    notify_user("色花堂自动签到", msg, "登录失效")
+                return False
+            elif login_status == "network_error":
+                if round_num < max_rounds:
+                    wait_sec = 20 * round_num
+                    logger.warning(f"网络连接色花堂超时 (午夜高峰网络波动)，等待 {wait_sec} 秒后进行下一轮重试...")
+                    time.sleep(wait_sec)
+                    continue
+                else:
+                    err_msg = "连接色花堂服务器超时 (多次重试均未响应)，当前网络波动或网站繁忙"
+                    logger.error(err_msg)
+                    if notify:
+                        notify_user("色花堂自动签到", f"{err_msg}，Cookie仍然有效无需重新登录", "网络超时")
+                    return False
+            else:
+                if round_num < max_rounds:
+                    time.sleep(10)
+                    continue
+                return False
 
-    logger.info(f"用户【{signer.username}】当前状态: {status_msg}，开始破解验证码并签到...")
+        # 2. 检查是否已经签到
+        already_signed, status_msg, check_err = signer.check_signed_in_status(max_retries=3)
+        if check_err == "network_error":
+            if round_num < max_rounds:
+                logger.warning("获取签到页面超时，稍后重试...")
+                time.sleep(15)
+                continue
+            else:
+                logger.error("打开签到页面超时")
+                if notify:
+                    notify_user("色花堂自动签到", "连接签到页面超时，稍后自动重试", "网络超时")
+                return False
 
-    # 3. 求解验证码
-    if not signer.solve_captcha_and_verify(max_retries=10):
-        fail_msg = "验证码自动识别校验失败，稍后可重试"
-        logger.error(fail_msg)
-        if notify:
-            notify_user("色花堂自动签到", fail_msg, "验证码失败")
-        return False
+        if already_signed:
+            info_msg = f"用户【{signer.username}】今日已完成签到，无需重复操作"
+            logger.info(info_msg)
+            if notify:
+                notify_user("色花堂自动签到", info_msg, "今日已签到")
+            return True
 
-    # 4. 执行签到
-    success, result_msg = signer.do_sign()
-    if success:
-        ok_msg = f"用户【{signer.username}】{result_msg}"
-        logger.info(f"🎉 {ok_msg}")
-        if notify:
-            notify_user("色花堂自动签到", ok_msg, "签到成功")
-        return True
-    else:
-        err_msg = f"签到失败: {result_msg}"
-        logger.error(err_msg)
-        if notify:
-            notify_user("色花堂自动签到", err_msg, "失败")
-        return False
+        logger.info(f"用户【{signer.username}】当前状态: {status_msg}，开始破解验证码并签到...")
+
+        # 3. 求解验证码
+        if not signer.solve_captcha_and_verify(max_retries=10):
+            fail_msg = "验证码自动识别校验未通过，准备重试..."
+            logger.error(fail_msg)
+            if round_num < max_rounds:
+                time.sleep(10)
+                continue
+            if notify:
+                notify_user("色花堂自动签到", "验证码校验失败，稍后将自动重试", "验证码失败")
+            return False
+
+        # 4. 执行签到
+        success, result_msg = signer.do_sign()
+        if success:
+            ok_msg = f"用户【{signer.username}】{result_msg}"
+            logger.info(f"🎉 {ok_msg}")
+            if notify:
+                notify_user("色花堂自动签到", ok_msg, "签到成功")
+            return True
+        else:
+            err_msg = f"签到请求未成功: {result_msg}"
+            logger.error(err_msg)
+            if round_num < max_rounds:
+                time.sleep(10)
+                continue
+            if notify:
+                notify_user("色花堂自动签到", err_msg, "失败")
+            return False
+
+    return False
 
 
 def run_daemon_loop(hour: int = 0, minute: int = 1, notify: bool = True, profile: str = "Default"):
@@ -573,10 +638,11 @@ def main():
             print("❌ 未在 Chrome 中找到有效登录 Cookie")
             sys.exit(1)
         signer = SehuatangSigner(cookies)
-        if not signer.check_login():
-            print("❌ 登录失效，请在 Chrome 重新登录")
+        login_ok, login_msg = signer.check_login()
+        if not login_ok:
+            print(f"❌ 登录状态检测失败: {login_msg}")
             sys.exit(1)
-        signed, msg = signer.check_signed_in_status()
+        signed, msg, _ = signer.check_signed_in_status()
         print(f"✅ 用户: {signer.username} | 状态: {msg}")
         sys.exit(0)
 

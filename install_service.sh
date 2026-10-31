@@ -54,9 +54,9 @@ cat <<EOF > "$PLIST_PATH"
         <integer>$MINUTE</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>$TARGET_DIR/sehuatang_sign.log</string>
+    <string>/tmp/sehuatang_launchd_sys.log</string>
     <key>StandardErrorPath</key>
-    <string>$TARGET_DIR/sehuatang_sign.log</string>
+    <string>/tmp/sehuatang_launchd_sys.log</string>
 </dict>
 </plist>
 EOF
