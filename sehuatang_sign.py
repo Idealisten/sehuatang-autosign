@@ -133,6 +133,18 @@ def send_bark_notification(title: str, message: str, subtitle: str = "", bark_ke
                 return True
         logger.warning(f"Bark 推送响应非 200: HTTP {resp.status_code} - {resp.text}")
         return False
+    except requests.exceptions.ProxyError as e:
+        logger.warning(f"Bark 推送遭遇代理异常 ({e})，切换为直连模式重试...")
+        try:
+            s = requests.Session()
+            s.trust_env = False
+            resp = s.post(target_url, json=payload, timeout=8)
+            if resp.status_code == 200 and resp.json().get("code") == 200:
+                logger.info(f"📱 Bark 直连推送成功: 【{title}】{message}")
+                return True
+        except Exception as e2:
+            logger.error(f"Bark 直连推送失败: {e2}")
+            return False
     except Exception as e:
         logger.error(f"Bark 推送失败: {e}")
         return False
@@ -264,6 +276,11 @@ class SehuatangSigner:
                 else:
                     logger.warning("页面已响应但未找到用户信息，Cookie 可能已过期！")
                     return False, "cookie_expired"
+            except requests.exceptions.ProxyError as e:
+                logger.warning(f"检测到本地代理异常 ({e})，自动切换为直连模式 (trust_env=False)...")
+                self.session.trust_env = False
+                time.sleep(2)
+                continue
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 logger.warning(f"连接色花堂超时/网络波动 (尝试 {attempt}/{max_retries}): {e}")
                 if attempt < max_retries:
@@ -310,6 +327,11 @@ class SehuatangSigner:
                     return True, "今日已签到", "ok"
 
                 return False, "今日未签到", "ok"
+            except requests.exceptions.ProxyError as e:
+                logger.warning(f"获取签到页代理异常 ({e})，切换为直连模式 (trust_env=False)...")
+                self.session.trust_env = False
+                time.sleep(2)
+                continue
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 logger.warning(f"获取签到页面超时 (尝试 {attempt}/{max_retries}): {e}")
                 time.sleep(3)
@@ -395,8 +417,13 @@ class SehuatangSigner:
         for attempt in range(1, max_retries + 1):
             time.sleep(2.0)  # 避免触发 429 频率限制
             try:
-                resp = self.session.get(CAPTCHA_URL, timeout=10)
+                resp = self.session.get(CAPTCHA_URL, timeout=15)
                 res_data = resp.json()
+            except requests.exceptions.ProxyError as e:
+                logger.warning(f"获取验证码代理异常 ({e})，切换为直连模式 (trust_env=False) 重试...")
+                self.session.trust_env = False
+                time.sleep(2)
+                continue
             except Exception as e:
                 logger.warning(f"获取验证码网络失败 (尝试 {attempt}/{max_retries}): {e}")
                 continue
@@ -473,12 +500,17 @@ class SehuatangSigner:
                 msg = data.get("message", "未知错误") if data else "无响应数据"
                 logger.warning(f"签到请求返回非200: {msg}")
                 return False, msg
+        except requests.exceptions.ProxyError as e:
+            logger.warning(f"签到请求代理异常 ({e})，切换为直连模式 (trust_env=False)...")
+            self.session.trust_env = False
+            time.sleep(2)
+            return self.do_sign()
         except Exception as e:
             logger.error(f"执行签到请求出错: {e}")
             return False, str(e)
 
 
-def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: int = 3) -> bool:
+def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: int = 3, silent_if_signed: bool = False) -> bool:
     """
     运行完整的签到流程，具备多轮网络容错与重试机制
     """
@@ -540,7 +572,7 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
         if already_signed:
             info_msg = f"用户【{signer.username}】今日已完成签到，无需重复操作"
             logger.info(info_msg)
-            if notify:
+            if notify and not silent_if_signed:
                 notify_user("色花堂自动签到", info_msg, "今日已签到")
             return True
 
@@ -606,6 +638,7 @@ def main():
     parser.add_argument("--daemon", action="store_true", help="以守护进程模式常驻后台运行")
     parser.add_argument("--hour", type=int, default=0, help="守护进程模式每日执行小时 (默认: 0)")
     parser.add_argument("--minute", type=int, default=1, help="守护进程模式每日执行分钟 (默认: 1)")
+    parser.add_argument("--silent-if-signed", action="store_true", help="若今日已签到则静默退出，不发送通知推送")
     parser.add_argument("--bark-key", help="设置或指定 Bark Key (或完整 Bark URL)")
     parser.add_argument("--test-bark", nargs="?", const="", help="测试发送一条 Bark 推送通知")
 
@@ -649,7 +682,7 @@ def main():
     if args.daemon:
         run_daemon_loop(hour=args.hour, minute=args.minute, notify=notify, profile=args.profile)
     else:
-        success = run_sign_process(notify=notify, profile=args.profile)
+        success = run_sign_process(notify=notify, profile=args.profile, silent_if_signed=args.silent_if_signed)
         sys.exit(0 if success else 1)
 
 

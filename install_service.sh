@@ -43,16 +43,37 @@ cat <<EOF > "$PLIST_PATH"
     <array>
         <string>$TARGET_DIR/.venv/bin/python</string>
         <string>$TARGET_DIR/sehuatang_sign.py</string>
+        <string>--silent-if-signed</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$TARGET_DIR</string>
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>$HOUR</integer>
-        <key>Minute</key>
-        <integer>$MINUTE</integer>
-    </dict>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>$HOUR</integer>
+            <key>Minute</key>
+            <integer>$MINUTE</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>8</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>19</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
     <key>StandardOutPath</key>
     <string>/tmp/sehuatang_launchd_sys.log</string>
     <key>StandardErrorPath</key>
