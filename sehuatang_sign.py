@@ -68,6 +68,8 @@ CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 USER_CONFIG_FILE = Path.home() / ".sehuatang/config.json"
 STATE_FILE = Path(__file__).resolve().parent / "sign_state.json"
 USER_STATE_FILE = Path.home() / ".sehuatang/sign_state.json"
+COOKIES_FILE = Path(__file__).resolve().parent / "cookies.json"
+USER_COOKIES_FILE = Path.home() / ".sehuatang/cookies.json"
 
 
 def get_last_signed_date() -> str:
@@ -266,6 +268,74 @@ def get_chrome_cookies(profile_name: str = "Default") -> dict:
 
     logger.info(f"成功从 Chrome 读取到 {len(cookies)} 个 Cookie 项 (路径: {found_path})")
     return cookies
+
+
+def get_cookies_and_ua(profile_name: str = "Default") -> tuple[dict, str]:
+    """
+    获取色花堂的 Cookies 与匹配的 User-Agent。
+    优先级：
+    1. 本地 cookies.json 文件 (适用于电脑B/无Chrome环境)
+    2. 环境变量 SEHUATANG_COOKIES
+    3. 本机 Chrome 数据库动态解密读取
+    """
+    # 1. 尝试从 cookies.json 读取
+    for p in [COOKIES_FILE, USER_COOKIES_FILE]:
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        if "cookies" in data and isinstance(data["cookies"], dict):
+                            cookies = data["cookies"]
+                            ua = data.get("user_agent") or DEFAULT_UA
+                            logger.info(f"成功从本地配置文件 {p} 加载了 {len(cookies)} 个 Cookie 项")
+                            return cookies, ua
+                        elif any("auth" in k or "saltkey" in k for k in data.keys()):
+                            logger.info(f"成功从本地配置文件 {p} 加载了 {len(data)} 个 Cookie 项")
+                            return data, DEFAULT_UA
+            except Exception as e:
+                logger.warning(f"读取 cookies 配置文件 {p} 出错: {e}")
+
+    # 2. 尝试从环境变量 SEHUATANG_COOKIES 读取 (支持 JSON 字符串)
+    if "SEHUATANG_COOKIES" in os.environ:
+        try:
+            env_data = json.loads(os.environ["SEHUATANG_COOKIES"])
+            if isinstance(env_data, dict):
+                if "cookies" in env_data:
+                    return env_data["cookies"], env_data.get("user_agent", DEFAULT_UA)
+                return env_data, DEFAULT_UA
+        except Exception as e:
+            logger.warning(f"解析环境变量 SEHUATANG_COOKIES 出错: {e}")
+
+    # 3. 从本机 Chrome 浏览器解密读取
+    cookies = get_chrome_cookies(profile_name=profile_name)
+    ua = get_chrome_user_agent()
+    return cookies, ua
+
+
+def export_cookies_to_file(output_path: Path = None, profile_name: str = "Default") -> bool:
+    """将当前电脑 Chrome 中的 Cookies 和 User-Agent 导出为 cookies.json，方便拷贝到电脑B使用"""
+    cookies = get_chrome_cookies(profile_name=profile_name)
+    if not cookies:
+        logger.error("未找到有效的 Chrome Cookie，无法导出")
+        return False
+
+    ua = get_chrome_user_agent()
+    data = {
+        "user_agent": ua,
+        "export_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "cookies": cookies
+    }
+
+    target = output_path or COOKIES_FILE
+    try:
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ 成功将登录凭据导出到: {target}")
+        return True
+    except Exception as e:
+        logger.error(f"导出 cookies 失败: {e}")
+        return False
 
 
 class SehuatangSigner:
@@ -564,13 +634,13 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
     logger.info("=" * 50)
     logger.info("开始执行色花堂自动签到流程")
 
-    cookies = get_chrome_cookies(profile_name=profile)
+    cookies, ua = get_cookies_and_ua(profile_name=profile)
     if not cookies:
         if notify:
-            notify_user("色花堂自动签到", "未在 Chrome 中找到登录 Cookie，请先在 Chrome 登录", "失败")
+            notify_user("色花堂自动签到", "未在 Chrome 或 cookies.json 中找到有效登录凭据", "失败")
         return False
 
-    signer = SehuatangSigner(cookies)
+    signer = SehuatangSigner(cookies, user_agent=ua)
 
     for round_num in range(1, max_rounds + 1):
         if round_num > 1:
@@ -693,6 +763,7 @@ def main():
     parser.add_argument("--hour", type=int, default=0, help="守护进程模式每日执行小时 (默认: 0)")
     parser.add_argument("--minute", type=int, default=1, help="守护进程模式每日执行分钟 (默认: 1)")
     parser.add_argument("--silent-if-signed", action="store_true", help="若今日已签到则静默退出，不发送通知推送")
+    parser.add_argument("--export-cookies", nargs="?", const="cookies.json", help="导出当前 Chrome 登录凭据至 cookies.json (便于拷贝到电脑B使用)")
     parser.add_argument("--bark-key", help="设置或指定 Bark Key (或完整 Bark URL)")
     parser.add_argument("--test-bark", nargs="?", const="", help="测试发送一条 Bark 推送通知")
 
@@ -719,12 +790,23 @@ def main():
             sys.exit(1)
     notify = not args.no_notify
 
-    if args.check:
-        cookies = get_chrome_cookies(profile_name=args.profile)
-        if not cookies:
-            print("❌ 未在 Chrome 中找到有效登录 Cookie")
+    if args.export_cookies:
+        out_file = Path(args.export_cookies)
+        ok = export_cookies_to_file(output_path=out_file, profile_name=args.profile)
+        if ok:
+            print(f"🎉 成功导出 cookies 文件: {out_file}")
+            print("💡 使用方式：将该文件复制到电脑 B 的项目目录下，电脑 B 无需登录即可直接自动签到！")
+            sys.exit(0)
+        else:
+            print("❌ 导出失败，请确认本地 Chrome 已登录色花堂")
             sys.exit(1)
-        signer = SehuatangSigner(cookies)
+
+    if args.check:
+        cookies, ua = get_cookies_and_ua(profile_name=args.profile)
+        if not cookies:
+            print("❌ 未在 Chrome 或 cookies.json 中找到有效登录 Cookie")
+            sys.exit(1)
+        signer = SehuatangSigner(cookies, user_agent=ua)
         login_ok, login_msg = signer.check_login()
         if not login_ok:
             print(f"❌ 登录状态检测失败: {login_msg}")

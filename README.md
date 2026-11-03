@@ -49,6 +49,32 @@
 
 ---
 
+## 💻 跨电脑部署（电脑 A 导出，电脑 B 免登录签到）
+
+如果你外出携带笔记本电脑（电脑 A），希望放在家里的常开电脑（电脑 B，如 Mac mini、软路由、Linux 服务器或 NAS）负责每日自动签到，电脑 B **无需安装 Chrome，也无需在电脑 B 登录论坛**：
+
+### 1. 电脑 A（笔记本）：一键导出 Cookie
+```bash
+./run.sh --export-cookies
+```
+将在当前目录生成一个 `cookies.json`，内含已解密的色花堂 Cookies 和对应的 User-Agent。
+
+### 2. 拷贝到电脑 B（家里电脑）
+将生成的 `cookies.json` 复制到电脑 B 的项目根目录下（可通过 AirDrop、本地局域网共享、微信传输助手或 SCP）。
+
+### 3. 电脑 B 启动运行
+在电脑 B 上安装好依赖后直接运行：
+```bash
+# 电脑 B 检查状态（自动优先读取 cookies.json）
+./run.sh --check
+
+# 电脑 B 配置自动签到后台服务
+./install_service.sh 0 1
+```
+> 提示：`cookies.json` 已经被 `.gitignore` 忽略，不会被提交或泄露至 GitHub。
+
+---
+
 ## 📱 配置 Bark 手机推送消息提醒
 
 除了 macOS 本地桌面通知外，本工具支持配置 **Bark** 将签到结果实时推送到 iPhone 手机端：
