@@ -270,16 +270,56 @@ def get_chrome_cookies(profile_name: str = "Default") -> dict:
     return cookies
 
 
+def try_remote_push_cookies(local_file: Path):
+    """如果配置了 remote_sync (如局域网IP、Tailscale IP)，自动通过 scp 推送至电脑 B"""
+    config = load_config()
+    sync_cfg = config.get("remote_sync")
+    if not sync_cfg or not sync_cfg.get("enabled"):
+        return
+
+    host = sync_cfg.get("host")
+    user = sync_cfg.get("user")
+    remote_path = sync_cfg.get("remote_path", "~/.sehuatang/cookies.json")
+    port = sync_cfg.get("port", 22)
+
+    if not host or not user:
+        return
+
+    target_spec = f"{user}@{host}:{remote_path}"
+    logger.info(f"正在尝试自动推送 cookies 至电脑 B ({target_spec})...")
+    try:
+        cmd = [
+            "scp",
+            "-P", str(port),
+            "-o", "ConnectTimeout=5",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=accept-new",
+            str(local_file),
+            target_spec
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if res.returncode == 0:
+            logger.info(f"🚀 成功将最新 Cookies 自动同步至电脑 B: {target_spec}")
+        else:
+            logger.warning(f"自动同步至电脑 B 失败 (退出码 {res.returncode}): {res.stderr.strip()}")
+    except Exception as e:
+        logger.warning(f"推送至电脑 B 发生异常: {e}")
+
+
 def get_cookies_and_ua(profile_name: str = "Default") -> tuple[dict, str]:
     """
     获取色花堂的 Cookies 与匹配的 User-Agent。
     优先级：
-    1. 本地 cookies.json 文件 (适用于电脑B/无Chrome环境)
-    2. 环境变量 SEHUATANG_COOKIES
-    3. 本机 Chrome 数据库动态解密读取
+    1. 本地 cookies.json 文件
+    2. 用户目录 ~/.sehuatang/cookies.json
+    3. iCloud Drive 自动同步目录 (~/Library/Mobile Documents/com~apple~CloudDocs/.sehuatang/cookies.json)
+    4. 环境变量 SEHUATANG_COOKIES
+    5. 本机 Chrome 数据库动态解密读取
     """
-    # 1. 尝试从 cookies.json 读取
-    for p in [COOKIES_FILE, USER_COOKIES_FILE]:
+    icloud_file = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/.sehuatang/cookies.json"
+    search_paths = [COOKIES_FILE, USER_COOKIES_FILE, icloud_file]
+
+    for p in search_paths:
         if p.exists():
             try:
                 with open(p, "r", encoding="utf-8") as f:
@@ -288,15 +328,15 @@ def get_cookies_and_ua(profile_name: str = "Default") -> tuple[dict, str]:
                         if "cookies" in data and isinstance(data["cookies"], dict):
                             cookies = data["cookies"]
                             ua = data.get("user_agent") or DEFAULT_UA
-                            logger.info(f"成功从本地配置文件 {p} 加载了 {len(cookies)} 个 Cookie 项")
+                            logger.info(f"成功从配置文件 {p} 加载了 {len(cookies)} 个 Cookie 项")
                             return cookies, ua
                         elif any("auth" in k or "saltkey" in k for k in data.keys()):
-                            logger.info(f"成功从本地配置文件 {p} 加载了 {len(data)} 个 Cookie 项")
+                            logger.info(f"成功从配置文件 {p} 加载了 {len(data)} 个 Cookie 项")
                             return data, DEFAULT_UA
             except Exception as e:
                 logger.warning(f"读取 cookies 配置文件 {p} 出错: {e}")
 
-    # 2. 尝试从环境变量 SEHUATANG_COOKIES 读取 (支持 JSON 字符串)
+    # 尝试从环境变量 SEHUATANG_COOKIES 读取 (支持 JSON 字符串)
     if "SEHUATANG_COOKIES" in os.environ:
         try:
             env_data = json.loads(os.environ["SEHUATANG_COOKIES"])
@@ -307,14 +347,14 @@ def get_cookies_and_ua(profile_name: str = "Default") -> tuple[dict, str]:
         except Exception as e:
             logger.warning(f"解析环境变量 SEHUATANG_COOKIES 出错: {e}")
 
-    # 3. 从本机 Chrome 浏览器解密读取
+    # 从本机 Chrome 浏览器解密读取
     cookies = get_chrome_cookies(profile_name=profile_name)
     ua = get_chrome_user_agent()
     return cookies, ua
 
 
 def export_cookies_to_file(output_path: Path = None, profile_name: str = "Default") -> bool:
-    """将当前电脑 Chrome 中的 Cookies 和 User-Agent 导出为 cookies.json，方便拷贝到电脑B使用"""
+    """将当前电脑 Chrome 中的 Cookies 和 User-Agent 导出为 cookies.json，自动同步至 iCloud 及远程电脑B"""
     cookies = get_chrome_cookies(profile_name=profile_name)
     if not cookies:
         logger.error("未找到有效的 Chrome Cookie，无法导出")
@@ -327,15 +367,28 @@ def export_cookies_to_file(output_path: Path = None, profile_name: str = "Defaul
         "cookies": cookies
     }
 
-    target = output_path or COOKIES_FILE
-    try:
-        with open(target, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info(f"✅ 成功将登录凭据导出到: {target}")
-        return True
-    except Exception as e:
-        logger.error(f"导出 cookies 失败: {e}")
-        return False
+    target_file = output_path or COOKIES_FILE
+    targets = [target_file]
+
+    # 如果系统开启了 iCloud Drive，自动同步一份到 iCloud Drive
+    icloud_file = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/.sehuatang/cookies.json"
+    if icloud_file.parent.parent.exists():
+        targets.append(icloud_file)
+
+    success = False
+    for target in targets:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"✅ 成功将登录凭据写入: {target}")
+            success = True
+        except Exception as e:
+            logger.error(f"导出 cookies 到 {target} 失败: {e}")
+
+    # 尝试推送到电脑 B (如果配置了 remote_sync)
+    try_remote_push_cookies(target_file)
+    return success
 
 
 class SehuatangSigner:

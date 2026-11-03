@@ -49,29 +49,44 @@
 
 ---
 
-## 💻 跨电脑部署（电脑 A 导出，电脑 B 免登录签到）
+## 💻 跨电脑全自动无感同步（电脑 A 自动导出，电脑 B 自动导入并签到）
 
-如果你外出携带笔记本电脑（电脑 A），希望放在家里的常开电脑（电脑 B，如 Mac mini、软路由、Linux 服务器或 NAS）负责每日自动签到，电脑 B **无需安装 Chrome，也无需在电脑 B 登录论坛**：
+如果你外出携带笔记本电脑（电脑 A），希望放在家里的常开电脑（电脑 B，如 Mac mini、软路由、Linux 服务器或 NAS）负责每日定时签到：
 
-### 1. 电脑 A（笔记本）：一键导出 Cookie
-```bash
-./run.sh --export-cookies
-```
-将在当前目录生成一个 `cookies.json`，内含已解密的色花堂 Cookies 和对应的 User-Agent。
+### 方式 1：如果电脑 B 也是 Mac（通过 iCloud Drive 全自动零配置同步 🌟 最推荐）
+如果家里电脑 B 也是 Mac 且登录同一个 Apple ID：
+1. **电脑 A（笔记本）开启后台自动导出**：
+   ```bash
+   ./install_exporter.sh
+   ```
+   电脑 A 会在后台自动将 Chrome 最新 Cookie 解密并同步至 iCloud Drive（`~/Library/Mobile Documents/com~apple~CloudDocs/.sehuatang/cookies.json`）。你在外地只要打开过论坛，iCloud 会在数秒内自动同步给家里的电脑 B！
+2. **电脑 B（家里 Mac）直接开启自动签到**：
+   ```bash
+   ./install_service.sh 0 1
+   ```
+   电脑 B 运行时会自动优先检测并读取 iCloud Drive 中的最新凭据，**完全全自动无感，无需人工传输任何文件**！
 
-### 2. 拷贝到电脑 B（家里电脑）
-将生成的 `cookies.json` 复制到电脑 B 的项目根目录下（可通过 AirDrop、本地局域网共享、微信传输助手或 SCP）。
+---
 
-### 3. 电脑 B 启动运行
-在电脑 B 上安装好依赖后直接运行：
-```bash
-# 电脑 B 检查状态（自动优先读取 cookies.json）
-./run.sh --check
-
-# 电脑 B 配置自动签到后台服务
-./install_service.sh 0 1
-```
-> 提示：`cookies.json` 已经被 `.gitignore` 忽略，不会被提交或泄露至 GitHub。
+### 方式 2：如果电脑 B 是 Linux / NAS / 树莓派（通过 SSH / Tailscale 自动推送）
+1. 在电脑 A 的 `config.json` 中开启 `remote_sync` 配置：
+   ```json
+   {
+     "bark_key": "...",
+     "remote_sync": {
+       "enabled": true,
+       "host": "192.168.1.100",    // 电脑 B 的局域网 IP 或 Tailscale 虚拟 IP (如 100.x.x.x)
+       "user": "root",            // 电脑 B 的用户名
+       "remote_path": "~/.sehuatang/cookies.json",
+       "port": 22
+     }
+   }
+   ```
+2. 配置好免密 SSH 登录后，电脑 A 执行导出（或后台定时器触发时）会自动通过 `scp` 毫秒级推送到电脑 B 的目标目录。
+3. 电脑 B 配置签到后台定时服务：
+   ```bash
+   ./install_service.sh 0 1
+   ```
 
 ---
 

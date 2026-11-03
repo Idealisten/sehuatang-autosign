@@ -1,4 +1,11 @@
 {
   "bark_key": "",
-  "bark_server": "https://api.day.app"
+  "bark_server": "https://api.day.app",
+  "remote_sync": {
+    "enabled": false,
+    "host": "100.72.87.28",
+    "user": "caoyue",
+    "remote_path": "~/.sehuatang/cookies.json",
+    "port": 22
+  }
 }
