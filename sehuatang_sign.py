@@ -66,6 +66,38 @@ logger.addHandler(file_handler)
 
 CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 USER_CONFIG_FILE = Path.home() / ".sehuatang/config.json"
+STATE_FILE = Path(__file__).resolve().parent / "sign_state.json"
+USER_STATE_FILE = Path.home() / ".sehuatang/sign_state.json"
+
+
+def get_last_signed_date() -> str:
+    """获取本地记录的最后一次成功签到日期 (YYYY-MM-DD)"""
+    for p in [USER_STATE_FILE, STATE_FILE]:
+        if p.exists():
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data.get("last_signed_date", "")
+            except Exception:
+                pass
+    return ""
+
+
+def save_signed_state(username: str):
+    """保存今日签到成功状态"""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    data = {
+        "last_signed_date": today_str,
+        "username": username,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    for p in [STATE_FILE, USER_STATE_FILE]:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.debug(f"保存签到状态文件 {p} 出错: {e}")
 
 
 def load_config() -> dict:
@@ -308,6 +340,10 @@ class SehuatangSigner:
                     time.sleep(3)
                     continue
 
+                if "维护" in resp.text or "maintenance" in resp.text.lower():
+                    logger.warning("访问签到页面提示: 网站正在数据库升级维护中")
+                    return False, "网站维护中", "maintenance"
+
                 soup = BeautifulSoup(resp.text, "html.parser")
                 btn = soup.find(id="signin-btn")
                 btn_container = soup.select_one(".ddpc_sign_btna")
@@ -418,6 +454,9 @@ class SehuatangSigner:
             time.sleep(2.0)  # 避免触发 429 频率限制
             try:
                 resp = self.session.get(CAPTCHA_URL, timeout=15)
+                if "维护" in resp.text or "maintenance" in resp.text.lower():
+                    logger.warning("获取验证码时发现色花堂正在进行网站数据库升级维护")
+                    return False
                 res_data = resp.json()
             except requests.exceptions.ProxyError as e:
                 logger.warning(f"获取验证码代理异常 ({e})，切换为直连模式 (trust_env=False) 重试...")
@@ -512,8 +551,16 @@ class SehuatangSigner:
 
 def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: int = 3, silent_if_signed: bool = False) -> bool:
     """
-    运行完整的签到流程，具备多轮网络容错与重试机制
+    运行完整的签到流程，具备本地状态记忆与多轮网络容错机制
     """
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    last_signed = get_last_signed_date()
+
+    # 如果是后台定时保底巡检，且本地已记录今日成功签到，则直接静默退出，不发网络请求也不骚扰手机
+    if silent_if_signed and last_signed == today_str:
+        logger.info(f"本地状态记录显示今日 ({today_str}) 已签到成功，跳过本次保底巡检")
+        return True
+
     logger.info("=" * 50)
     logger.info("开始执行色花堂自动签到流程")
 
@@ -541,13 +588,14 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
             elif login_status == "network_error":
                 if round_num < max_rounds:
                     wait_sec = 20 * round_num
-                    logger.warning(f"网络连接色花堂超时 (午夜高峰网络波动)，等待 {wait_sec} 秒后进行下一轮重试...")
+                    logger.warning(f"网络连接色花堂超时 (网络波动)，等待 {wait_sec} 秒后进行下一轮重试...")
                     time.sleep(wait_sec)
                     continue
                 else:
                     err_msg = "连接色花堂服务器超时 (多次重试均未响应)，当前网络波动或网站繁忙"
                     logger.error(err_msg)
-                    if notify:
+                    # 保底巡检时不向用户手机轰炸网络超时推送，仅在非静默(手动触发)时推送
+                    if notify and not silent_if_signed:
                         notify_user("色花堂自动签到", f"{err_msg}，Cookie仍然有效无需重新登录", "网络超时")
                     return False
             else:
@@ -558,6 +606,10 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
 
         # 2. 检查是否已经签到
         already_signed, status_msg, check_err = signer.check_signed_in_status(max_retries=3)
+        if check_err == "maintenance":
+            logger.warning("色花堂当前处于维护期，跳过本次尝试，等待下次保底执行")
+            return False
+
         if check_err == "network_error":
             if round_num < max_rounds:
                 logger.warning("获取签到页面超时，稍后重试...")
@@ -565,13 +617,14 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
                 continue
             else:
                 logger.error("打开签到页面超时")
-                if notify:
+                if notify and not silent_if_signed:
                     notify_user("色花堂自动签到", "连接签到页面超时，稍后自动重试", "网络超时")
                 return False
 
         if already_signed:
             info_msg = f"用户【{signer.username}】今日已完成签到，无需重复操作"
             logger.info(info_msg)
+            save_signed_state(signer.username)
             if notify and not silent_if_signed:
                 notify_user("色花堂自动签到", info_msg, "今日已签到")
             return True
@@ -585,7 +638,7 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
             if round_num < max_rounds:
                 time.sleep(10)
                 continue
-            if notify:
+            if notify and not silent_if_signed:
                 notify_user("色花堂自动签到", "验证码校验失败，稍后将自动重试", "验证码失败")
             return False
 
@@ -594,6 +647,7 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
         if success:
             ok_msg = f"用户【{signer.username}】{result_msg}"
             logger.info(f"🎉 {ok_msg}")
+            save_signed_state(signer.username)
             if notify:
                 notify_user("色花堂自动签到", ok_msg, "签到成功")
             return True
@@ -603,7 +657,7 @@ def run_sign_process(notify: bool = True, profile: str = "Default", max_rounds: 
             if round_num < max_rounds:
                 time.sleep(10)
                 continue
-            if notify:
+            if notify and not silent_if_signed:
                 notify_user("色花堂自动签到", err_msg, "失败")
             return False
 

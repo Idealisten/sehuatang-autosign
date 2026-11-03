@@ -6,6 +6,7 @@ __pycache__/
 
 # 敏感配置文件与个人日志
 config.json
+sign_state.json
 *.log
 sehuatang_sign.log
 
