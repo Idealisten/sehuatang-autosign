@@ -74,6 +74,8 @@ cat <<EOF > "$PLIST_PATH"
             <integer>0</integer>
         </dict>
     </array>
+    <key>RunAtLoad</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>/tmp/sehuatang_launchd_sys.log</string>
     <key>StandardErrorPath</key>
