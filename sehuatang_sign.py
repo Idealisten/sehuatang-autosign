@@ -467,6 +467,10 @@ class SehuatangSigner:
                     logger.warning("访问签到页面提示: 网站正在数据库升级维护中")
                     return False, "网站维护中", "maintenance"
 
+                if "插件不存在或已关闭" in resp.text:
+                    logger.warning("访问签到页面提示: 签到插件暂未开放或已关闭")
+                    return False, "签到插件暂未开启", "maintenance"
+
                 soup = BeautifulSoup(resp.text, "html.parser")
                 btn = soup.find(id="signin-btn")
                 btn_container = soup.select_one(".ddpc_sign_btna")
@@ -653,7 +657,14 @@ class SehuatangSigner:
                 "Referer": SIGN_PAGE_URL,
             }
             resp = self.session.get(DO_SIGN_URL, headers=sign_headers, timeout=20)
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                if "插件不存在或已关闭" in resp.text:
+                    return False, "官方签到插件当前暂未开启"
+                if "维护" in resp.text:
+                    return False, "网站维护中"
+                return False, "返回非 JSON 格式响应"
             if data and data.get("code") == 200:
                 msg = data.get("message", "签到成功")
                 logger.info(f"✅ 签到成功: {msg}")
